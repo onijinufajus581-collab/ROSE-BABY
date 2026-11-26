@@ -4,8 +4,7 @@ name: ROSE AI APK Builder
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
+    branches: [main]
 
 permissions:
   contents: read
@@ -15,53 +14,73 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Setup Java 17
+      - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Setup Gradle 8.9
+      - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
-      - name: Find Android Project
+      - name: Extract Android Project
         shell: bash
         run: |
-          echo "Searching Android project..."
-          SETTINGS=$(find . -type f \( -name settings.gradle -o -name settings.gradle.kts \) \
-            -not -path '*/.gradle/*' | head -n 1)
+          mkdir -p "$RUNNER_TEMP/rose-project"
 
-          if [ -z "$SETTINGS" ]; then
-            echo "ERROR: settings.gradle not found!"
+          while IFS= read -r -d '' file; do
+            if unzip -tqq "$file" >/dev/null 2>&1; then
+              echo "Extracting: $file"
+              unzip -oq "$file" -d "$RUNNER_TEMP/rose-project"
+            fi
+          done < <(find . -type f -not -path './.git/*' -print0)
+
+          echo "Searching Android app module..."
+
+          APP_GRADLE=$(find . "$RUNNER_TEMP/rose-project" \
+            -type f \( -path '*/app/build.gradle' -o -path '*/app/build.gradle.kts' \) \
+            -print -quit)
+
+          if [ -z "$APP_GRADLE" ]; then
+            echo "ERROR: app/build.gradle not found."
+            find "$RUNNER_TEMP/rose-project" -maxdepth 5 -type f
             exit 1
           fi
 
-          PROJECT_DIR=$(dirname "$SETTINGS")
-          echo "Project found: $PROJECT_DIR"
+          PROJECT_DIR=$(dirname "$(dirname "$APP_GRADLE")")
+
+          if [ ! -f "$PROJECT_DIR/settings.gradle" ] && \
+             [ ! -f "$PROJECT_DIR/settings.gradle.kts" ]; then
+            echo "ERROR: settings.gradle missing in $PROJECT_DIR"
+            exit 1
+          fi
+
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "Android project found: $PROJECT_DIR"
 
-          if [ ! -d "$PROJECT_DIR/app" ]; then
-            echo "ERROR: app folder missing in $PROJECT_DIR"
-            echo "Repository folders:"
-            find . -maxdepth 4 -type d | sort
-            exit 1
-          fi
-
-      - name: Build Debug APK
+      - name: Build APK
+        shell: bash
         run: |
           cd "$PROJECT_DIR"
-          gradle assembleDebug --no-daemon
+
+          if [ -f gradlew ]; then
+            chmod +x gradlew
+            ./gradlew assembleDebug
+          else
+            gradle assembleDebug
+          fi
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: ROSE-AI-APK
-          path: '**/build/outputs/apk/debug/*.apk'
+          path: |
+            **/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 14
           
